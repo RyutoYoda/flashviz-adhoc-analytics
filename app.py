@@ -29,6 +29,26 @@ except ImportError as e:
     USE_NEW_CONNECTORS = False
     st.error(f"新しいコネクタシステムが利用できません: {e}")
 
+# セマンティックレイヤーのインポート
+try:
+    from src.ui.semantic_tabs import (
+        init_semantic_state,
+        render_semantic_sidebar,
+        render_tables_tab,
+        render_relations_tab,
+        render_dimensions_tab,
+        render_measures_tab,
+        render_query_builder_tab,
+        render_lineage_tab,
+        render_export_tab,
+        get_gpt_system_prompt
+    )
+    from src.infrastructure.semantic import GPTContextFormatter
+    from src.infrastructure.semantic.gpt_context import create_enhanced_prompt
+    USE_SEMANTIC_LAYER = True
+except ImportError as e:
+    USE_SEMANTIC_LAYER = False
+
 st.set_page_config(page_title="FlashViz", layout="wide", initial_sidebar_state="expanded")
 
 # SQLバリデーション関数
@@ -78,6 +98,12 @@ if 'messages' not in st.session_state:
     st.session_state.messages = {}  # {データソース名: [messages]}
 if 'source_counter' not in st.session_state:
     st.session_state.source_counter = 0
+if 'app_mode' not in st.session_state:
+    st.session_state.app_mode = "chat"  # "chat" or "semantic"
+
+# セマンティックレイヤーの状態初期化
+if USE_SEMANTIC_LAYER:
+    init_semantic_state()
 
 # サイドバー
 with st.sidebar:
@@ -534,11 +560,33 @@ with st.sidebar:
                         import traceback
                         st.error(traceback.format_exc())
 
+    # セマンティックレイヤーサイドバー
+    if USE_SEMANTIC_LAYER:
+        st.divider()
+        # コネクタタイプを取得
+        connector_type = "duckdb"
+        if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
+            active_data = st.session_state.data_sources[st.session_state.active_source]
+            connector_type = active_data.get('type', 'duckdb')
+        render_semantic_sidebar(connector_type=connector_type)
+
 # メインエリア
 st.title("FlashViz - Adhoc Analytics Assistant")
 
-# アクティブなデータソースがあるかチェック
-if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
+# モード切り替え
+if USE_SEMANTIC_LAYER:
+    app_mode = st.radio(
+        "モード",
+        ["💬 チャット分析", "🔧 セマンティックレイヤー"],
+        horizontal=True,
+        key="mode_radio"
+    )
+    st.session_state.app_mode = "semantic" if "セマンティック" in app_mode else "chat"
+else:
+    st.session_state.app_mode = "chat"
+
+# チャット分析モード
+if st.session_state.app_mode == "chat" and st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
     active_data = st.session_state.data_sources[st.session_state.active_source]
     df = active_data['df']
 
@@ -1123,8 +1171,8 @@ if st.session_state.active_source and st.session_state.active_source in st.sessi
             except Exception as e:
                 st.error(f"AI生成エラー: {e}")
 
-else:
-    # データ未ロード時の案内
+elif st.session_state.app_mode == "chat":
+    # データ未ロード時の案内（チャットモードのみ）
     st.info("左のサイドバーからデータソースを選択してください")
 
     with st.expander("使い方", expanded=True):
@@ -1167,3 +1215,67 @@ else:
 - 「上位10商品の売上割合を円グラフで」
 - 「昨年同月比の成長率を計算して」
         """)
+
+# セマンティックレイヤーモード
+elif st.session_state.app_mode == "semantic" and USE_SEMANTIC_LAYER:
+    st.markdown("---")
+
+    # 実行関数の定義
+    def execute_semantic_query(sql: str):
+        """セマンティックレイヤーからのクエリ実行"""
+        if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
+            active_data = st.session_state.data_sources[st.session_state.active_source]
+            connector = active_data.get('connector')
+            df = active_data.get('df')
+
+            if connector and hasattr(connector, 'execute_query'):
+                return connector.execute_query(sql)
+            elif df is not None:
+                # DuckDBで実行
+                duck = duckdb.connect()
+                duck.register("data", df)
+                return duck.execute(sql).fetchdf()
+        return None
+
+    # セマンティックレイヤータブ
+    sl_tabs = st.tabs([
+        "📋 テーブル",
+        "🔗 リレーション",
+        "📊 ディメンション",
+        "📈 メジャー",
+        "🔍 クエリビルダー",
+        "🗺️ リネージ",
+        "📤 エクスポート"
+    ])
+
+    with sl_tabs[0]:
+        render_tables_tab()
+
+    with sl_tabs[1]:
+        render_relations_tab()
+
+    with sl_tabs[2]:
+        render_dimensions_tab()
+
+    with sl_tabs[3]:
+        render_measures_tab()
+
+    with sl_tabs[4]:
+        render_query_builder_tab(execute_query_func=execute_semantic_query)
+
+    with sl_tabs[5]:
+        render_lineage_tab()
+
+    with sl_tabs[6]:
+        render_export_tab()
+
+    # GPTプロンプトプレビュー（開発用）
+    if st.session_state.semantic_layer:
+        with st.expander("🤖 GPT System Prompt Preview", expanded=False):
+            dialect = "duckdb"
+            if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
+                active_data = st.session_state.data_sources[st.session_state.active_source]
+                dialect = active_data.get('type', 'duckdb')
+            system_prompt = get_gpt_system_prompt(dialect)
+            if system_prompt:
+                st.code(system_prompt, language="markdown")
