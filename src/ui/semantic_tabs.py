@@ -113,10 +113,26 @@ def render_tables_tab(get_table_schema_func=None, get_available_tables_func=None
 
         if node_type == "SOURCE":
             # テーブル一覧取得（コネクタから）
+            tables = []
             if get_available_tables_func:
                 tables = get_available_tables_func()
-                source_object = st.selectbox("ソーステーブル", tables, key="sl_source")
+
+            if tables:
+                # テーブル候補がある場合はセレクトボックス + 手動入力オプション
+                table_options = tables + ["（手動入力）"]
+                selected_table = st.selectbox("ソーステーブル", table_options, key="sl_source")
+
+                if selected_table == "（手動入力）":
+                    source_object = st.text_input(
+                        "テーブル名を入力",
+                        placeholder="DATABASE.SCHEMA.TABLE",
+                        key="sl_source_manual"
+                    )
+                else:
+                    source_object = selected_table
             else:
+                # テーブル候補がない場合は手動入力
+                st.info("データソースを接続するとテーブル候補が表示されます")
                 source_object = st.text_input(
                     "ソースオブジェクト",
                     placeholder="DATABASE.SCHEMA.TABLE",
@@ -297,6 +313,51 @@ def render_dimensions_tab(get_table_columns_func=None):
             key="sl_dim_node"
         )
 
+        # 選択されたノードのカラム候補を取得
+        columns = []
+        if selected_node_name:
+            selected_node = next((n for n in dim_nodes if n.node_name == selected_node_name), None)
+            if selected_node and selected_node.source_object and get_table_columns_func:
+                columns = get_table_columns_func(selected_node.source_object)
+
+        if columns:
+            st.markdown("**カラムから選択:**")
+            # 既存のディメンションを除外
+            existing_cols = set()
+            node_id = node_options[selected_node_name]
+            for dim in layer.dimensions:
+                if dim.node_id == node_id:
+                    existing_cols.add(dim.column_expression)
+
+            available_cols = [c for c in columns if c not in existing_cols]
+
+            if available_cols:
+                selected_cols = st.multiselect(
+                    "カラムを選択",
+                    available_cols,
+                    key="sl_dim_cols_select"
+                )
+
+                if st.button("選択したカラムを一括追加", type="primary", key="sl_add_dims_bulk"):
+                    if selected_cols:
+                        for idx, col_name in enumerate(selected_cols):
+                            dim = Dimension.create(
+                                node_id=node_options[selected_node_name],
+                                attr_name=col_name,
+                                column_expression=col_name,
+                                display_name=col_name,
+                                sort_order=idx
+                            )
+                            layer.add_dimension(dim)
+                        st.session_state.semantic_storage.save_semantic_layer(layer)
+                        st.success(f"{len(selected_cols)}件の属性を追加しました")
+                        st.rerun()
+            else:
+                st.caption("全カラム登録済み")
+
+            st.markdown("---")
+
+        st.markdown("**手動入力:**")
         attr_name = st.text_input("属性名", key="sl_attr_name")
         column_expr = st.text_input(
             "カラム式",
@@ -307,7 +368,7 @@ def render_dimensions_tab(get_table_columns_func=None):
         description = st.text_input("説明（任意）", key="sl_dim_desc")
         sort_order = st.number_input("表示順", min_value=0, value=0, key="sl_dim_sort")
 
-        if st.button("追加", type="primary", key="sl_add_dim"):
+        if st.button("追加", key="sl_add_dim"):
             if not attr_name or not column_expr:
                 st.error("属性名とカラム式は必須です")
             else:
@@ -355,7 +416,7 @@ def render_dimensions_tab(get_table_columns_func=None):
                             st.rerun()
 
 
-def render_measures_tab():
+def render_measures_tab(get_table_columns_func=None):
     """ファクトメジャー管理タブ"""
     st.header("ファクトメジャー")
 
@@ -383,6 +444,58 @@ def render_measures_tab():
             key="sl_fact_node"
         )
 
+        # 選択されたノードのカラム候補を取得
+        columns = []
+        if selected_node_name:
+            selected_node = next((n for n in fact_nodes if n.node_name == selected_node_name), None)
+            if selected_node and selected_node.source_object and get_table_columns_func:
+                columns = get_table_columns_func(selected_node.source_object)
+
+        if columns:
+            st.markdown("**カラムから選択:**")
+            # 既存のメジャーを除外
+            existing_cols = set()
+            node_id = node_options[selected_node_name]
+            for m in layer.measures:
+                if m.node_id == node_id:
+                    existing_cols.add(m.column_expression)
+
+            available_cols = [c for c in columns if c not in existing_cols]
+
+            if available_cols:
+                selected_cols = st.multiselect(
+                    "カラムを選択",
+                    available_cols,
+                    key="sl_measure_cols_select"
+                )
+
+                bulk_agg = st.selectbox(
+                    "集計関数（一括）",
+                    [a.value for a in Aggregation],
+                    key="sl_bulk_agg"
+                )
+
+                if st.button("選択したカラムを一括追加", type="primary", key="sl_add_measures_bulk"):
+                    if selected_cols:
+                        for idx, col_name in enumerate(selected_cols):
+                            measure = Measure.create(
+                                node_id=node_options[selected_node_name],
+                                measure_name=col_name,
+                                aggregation=Aggregation(bulk_agg),
+                                column_expression=col_name,
+                                display_name=f"{bulk_agg}_{col_name}",
+                                sort_order=idx
+                            )
+                            layer.add_measure(measure)
+                        st.session_state.semantic_storage.save_semantic_layer(layer)
+                        st.success(f"{len(selected_cols)}件のメジャーを追加しました")
+                        st.rerun()
+            else:
+                st.caption("全カラム登録済み")
+
+            st.markdown("---")
+
+        st.markdown("**手動入力:**")
         measure_name = st.text_input("メジャー名", key="sl_measure_name")
         aggregation = st.selectbox(
             "集計関数",
@@ -399,7 +512,7 @@ def render_measures_tab():
         description = st.text_input("説明（任意）", key="sl_fact_desc")
         sort_order = st.number_input("表示順", min_value=0, value=0, key="sl_fact_sort")
 
-        if st.button("追加", type="primary", key="sl_add_measure"):
+        if st.button("追加", key="sl_add_measure"):
             if not measure_name or not column_expr:
                 st.error("メジャー名とカラム式は必須です")
             else:

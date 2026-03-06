@@ -1220,7 +1220,75 @@ elif st.session_state.app_mode == "chat":
 elif st.session_state.app_mode == "semantic" and USE_SEMANTIC_LAYER:
     st.markdown("---")
 
-    # 実行関数の定義
+    # ヘルパー関数の定義
+    def get_available_tables():
+        """接続中のデータソースから利用可能なテーブル一覧を取得"""
+        if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
+            active_data = st.session_state.data_sources[st.session_state.active_source]
+            connector = active_data.get('connector')
+            source_type = active_data.get('type', 'local')
+
+            if connector:
+                try:
+                    if source_type == 'snowflake':
+                        # Snowflake: database.schema.table形式
+                        db = active_data.get('database', '')
+                        schema = active_data.get('schema', '')
+                        if hasattr(connector, 'list_tables') and db and schema:
+                            tables = connector.list_tables(db, schema)
+                            return [f"{db}.{schema}.{t}" for t in tables]
+                    elif source_type == 'bigquery':
+                        # BigQuery: project.dataset.table形式
+                        dataset = active_data.get('dataset', '')
+                        if hasattr(connector, 'list_tables') and dataset:
+                            tables = connector.list_tables(dataset)
+                            return [f"{dataset}.{t}" for t in tables]
+                    elif source_type == 'databricks':
+                        # Databricks: catalog.schema.table形式
+                        catalog = active_data.get('catalog', '')
+                        schema = active_data.get('schema', '')
+                        if hasattr(connector, 'list_tables') and catalog and schema:
+                            tables = connector.list_tables(catalog, schema)
+                            return [f"{catalog}.{schema}.{t}" for t in tables]
+                except Exception as e:
+                    st.warning(f"テーブル一覧取得エラー: {e}")
+
+            # ローカルファイルの場合は現在のデータソース名を返す
+            if source_type == 'local' and active_data.get('df') is not None:
+                return [st.session_state.active_source]
+
+        return []
+
+    def get_table_columns(table_name: str):
+        """テーブルのカラム一覧を取得"""
+        if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
+            active_data = st.session_state.data_sources[st.session_state.active_source]
+            connector = active_data.get('connector')
+            source_type = active_data.get('type', 'local')
+
+            if connector and hasattr(connector, 'get_table_schema'):
+                try:
+                    # テーブル名をパース
+                    parts = table_name.split('.')
+                    if source_type == 'snowflake' and len(parts) == 3:
+                        schema_info = connector.get_table_schema(parts[0], parts[2], parts[1])
+                        return list(schema_info.keys()) if schema_info else []
+                    elif source_type == 'bigquery' and len(parts) == 2:
+                        schema_info = connector.get_table_schema(parts[0], parts[1])
+                        return list(schema_info.keys()) if schema_info else []
+                    elif source_type == 'databricks' and len(parts) == 3:
+                        schema_info = connector.get_table_schema(parts[0], parts[2], parts[1])
+                        return list(schema_info.keys()) if schema_info else []
+                except Exception as e:
+                    st.warning(f"カラム取得エラー: {e}")
+
+            # ローカルファイルの場合
+            df = active_data.get('df')
+            if df is not None:
+                return df.columns.tolist()
+
+        return []
+
     def execute_semantic_query(sql: str):
         """セマンティックレイヤーからのクエリ実行"""
         if st.session_state.active_source and st.session_state.active_source in st.session_state.data_sources:
@@ -1249,16 +1317,16 @@ elif st.session_state.app_mode == "semantic" and USE_SEMANTIC_LAYER:
     ])
 
     with sl_tabs[0]:
-        render_tables_tab()
+        render_tables_tab(get_available_tables_func=get_available_tables)
 
     with sl_tabs[1]:
-        render_relations_tab()
+        render_relations_tab(get_table_columns_func=get_table_columns)
 
     with sl_tabs[2]:
-        render_dimensions_tab()
+        render_dimensions_tab(get_table_columns_func=get_table_columns)
 
     with sl_tabs[3]:
-        render_measures_tab()
+        render_measures_tab(get_table_columns_func=get_table_columns)
 
     with sl_tabs[4]:
         render_query_builder_tab(execute_query_func=execute_semantic_query)
